@@ -1,37 +1,37 @@
 import os
-import pymupdf  # PyMuPDF (modern import)
+import fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
 
+# load the env vars
 load_dotenv()
 
+# config settings
 API_KEY = os.getenv("GEMINI_API_KEY")
 ACTIVE_MODEL = "gemini-1.5-flash"
 
-
 def get_pdf_text(path):
-    """Extract all text from a PDF file."""
-    pages = []
-    with pymupdf.open(path) as pdf:
-        for page in pdf:
-            pages.append(page.get_text())
-    return "\n".join(pages)
-
+    """ extracts all text from a given pdf file path """
+    content = []
+    with fitz.open(path) as pdf:
+        for pg in pdf:
+            content.append(pg.get_text())
+    return "\n".join(content)
 
 def create_vs(files):
-    """Build a FAISS vector store from a list of PDF paths."""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
-    chunks = []
+    """ builds the faiss vector store from a list of pdfs """
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
+    all_chunks = []
 
     for f in files:
-        raw = get_pdf_text(f)
-        chunks.extend(splitter.split_text(raw))
+        raw_data = get_pdf_text(f)
+        all_chunks.extend(text_splitter.split_text(raw_data))
 
-    # Gemini embeddings via API — no local model download, no torch dependency
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
+    # using Google's text-embedding-004 (current stable model)
+    embed_model = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
         google_api_key=API_KEY
     )
-    return FAISS.from_texts(chunks, embedding=embeddings)
+    return FAISS.from_texts(all_chunks, embedding=embed_model)
