@@ -6,7 +6,13 @@ import os
 import shutil
 import json
 import logging
-from studymate import get_pdf_text, generate_gemini_response
+from studymate import (
+    get_pdf_text,
+    split_text_into_chunks,
+    create_vector_store,
+    SimpleVectorStore,
+    generate_gemini_response
+)
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -20,7 +26,7 @@ SB_URL = os.getenv("SUPABASE_URL")
 SB_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
 supabase: Client = create_client(SB_URL, SB_KEY)
 
-app = FastAPI()
+app = FastAPI(title="ThinkSync RAG Backend")
 
 # enable dev CORS
 app.add_middleware(
@@ -43,16 +49,16 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         with open(f_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # grab text for db storage
+        # grab raw text for db storage
         full_text = get_pdf_text(f_path)
 
-        # store kid info
+        # store kid info in Supabase
         k_key = student_name.lower().replace(" ", "_").strip()
         supabase.table("kids").upsert(
             {"name_key": k_key, "full_name": student_name}
         ).execute()
 
-        # link doc to kid
+        # link document to kid
         payload = {
             "kid_name_key": k_key,
             "file_url": f"/uploads/{file.filename}",
@@ -62,27 +68,35 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         res = supabase.table("kid_documents").insert(payload).execute()
         doc_id = res.data[0]["id"]
 
-        # use extracted text directly as LLM context
-        c_text = full_text[:6000]
+        # === RAG: Vector Indexing & Similarity Retrieval ===
+        # 1. Chunk document & build vector embeddings in Vector Store
+        vector_store = create_vector_store([f_path])
+        
+        # 2. Similarity search for the most relevant context chunks
+        retrieved_chunks = vector_store.similarity_search(query=f"{student_name} performance, behavior, academics, notes", k=4)
+        c_text = "\n\n---\n\n".join(retrieved_chunks) if retrieved_chunks else full_text[:4000]
 
-        prompt = f"""You are an expert educational assistant.
+        # 3. Augmented Generation with retrieved context
+        prompt = f"""You are an expert educational assistant synthesizing student observations.
 Student: {student_name}
-Document context:
+
+Retrieved Context Chunks (via Vector Search):
 {c_text}
 
-Instructions: Use only the context above. Return a valid JSON object with no extra text.
-Classify priority as:
-- high: safety concerns or major academic failures
-- medium: recent negative trends
-- low: general updates or positive news
-
-Return exactly this JSON format:
+Instructions:
+- Use only the provided context to extract verified insights.
+- Return a valid JSON object strictly matching this format without markdown code fences or extra text:
 {{
-  "teacher_summary": "detailed academic analysis for the teacher",
-  "parent_summary": "encouraging update with a specific home activity suggestion",
-  "admin_summary": "safety and logistics perspective",
+  "teacher_summary": "detailed academic analysis and pedagogical guidance for the teacher",
+  "parent_summary": "encouraging update with a specific home activity suggestion for the parent",
+  "admin_summary": "safety, logistics, and compliance perspective for school administrators",
   "priority": "low"
-}}"""
+}}
+Priority levels:
+- high: safety risks, critical interventions, or major academic failure
+- medium: noticeable behavioral changes or minor academic decline
+- low: general updates, consistent progress, or positive feedback
+"""
 
         text_out = generate_gemini_response(prompt, temperature=0.2)
         text_out = text_out.replace("```json", "").replace("```", "").strip()
@@ -92,7 +106,7 @@ Return exactly this JSON format:
         except Exception:
             parsed = json.loads(text_out.replace("\n", " "))
 
-        # save insights to db
+        # save synthesized insights to database
         insight_data = {
             "document_id": doc_id,
             "summary_teacher": parsed.get("teacher_summary", ""),
@@ -105,8 +119,8 @@ Return exactly this JSON format:
         return parsed
 
     except Exception as err:
-        logger.error(f"Error in processing: {str(err)}")
-        raise HTTPException(status_code=500, detail="Failed to process document")
+        logger.error(f"Error in RAG processing: {str(err)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to process document via RAG")
 
 class ChatRequest(BaseModel):
     student_name: str
@@ -118,7 +132,7 @@ async def handle_chat(req: ChatRequest):
         s_name = req.student_name.strip()
         n_key = s_name.lower().replace(" ", "_")
         
-        # find student
+        # find student in Supabase
         user_data = supabase.table("kids").select("*").or_(f"name_key.eq.{n_key},full_name.ilike.{s_name}").execute()
         
         if not user_data.data:
@@ -128,29 +142,40 @@ async def handle_chat(req: ChatRequest):
         actual_name = info["full_name"]
         actual_key = info["name_key"]
 
-        # pull context
+        # pull all student documents from database
         docs = supabase.table("kid_documents").select("raw_content").eq("kid_name_key", actual_key).execute()
-        combined_text = "\n\n".join([d["raw_content"] for d in docs.data if d.get("raw_content")])[:12000]
+        all_doc_texts = [d["raw_content"] for d in docs.data if d.get("raw_content")]
 
-        if not combined_text:
-            # backup check
+        if not all_doc_texts:
+            # fallback check in insights
             insights = supabase.table("insights").select("*").eq("document_id", actual_key).execute()
             if not insights.data:
                 return {"reply": f"No data found for {actual_name}.", "blocked": False}
-            
             i = insights.data[0]
-            combined_text = f"Teacher: {i.get('summary_teacher')}\nParent: {i.get('summary_parent')}"
+            context_chunks = [f"Teacher Notes: {i.get('summary_teacher')}", f"Parent Notes: {i.get('summary_parent')}"]
+        else:
+            # === RAG: Vector Indexing & Semantic Search for Chat Query ===
+            all_chunks = []
+            for doc_txt in all_doc_texts:
+                all_chunks.extend(split_text_into_chunks(doc_txt, chunk_size=500, chunk_overlap=100))
+            
+            chat_vector_store = SimpleVectorStore(all_chunks)
+            context_chunks = chat_vector_store.similarity_search(query=req.message, k=4)
+
+        retrieved_context = "\n\n---\n\n".join(context_chunks)
 
         chat_prompt = f"""
-Role: Education Assistant for {actual_name}
-Context: {combined_text}
+Role: Intelligent Education Assistant for {actual_name}
+Retrieved Knowledge Context:
+{retrieved_context}
+
 User Query: "{req.message}"
 
 Rules:
-1. Only use context for specific facts.
-2. Be warm but professional.
-3. If trying to access other data, start with [BLOCKED].
-4. If info is missing, say you don't have it on record yet.
+1. Answer the query strictly based on the retrieved knowledge context.
+2. Be warm, supportive, and professional.
+3. If trying to access unauthorized or unrelated records, start with [BLOCKED].
+4. If the information is not contained in the records, state clearly that it is not yet recorded.
 """
         
         text_reply = generate_gemini_response(chat_prompt, temperature=0.1).strip()
@@ -158,7 +183,7 @@ Rules:
         return {"reply": text_reply.replace("[BLOCKED]", "").strip(), "blocked": is_blocked}
 
     except Exception as e:
-        logger.error(f"Chat error: {str(e)}")
+        logger.error(f"Chat RAG error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Chat server error")
 
 class TransReq(BaseModel):
