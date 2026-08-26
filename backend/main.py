@@ -71,22 +71,23 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         # gen synthesis
         llm_engine = ChatGoogleGenerativeAI(model=ACTIVE_MODEL, temperature=0.2, google_api_key=API_KEY)
         
-        system_msg = "Expert Educational Assistant"
-        task_desc = f"Synthesize insights for {student_name} based on: {c_text}"
-        
         prompt = f"""
-        {system_msg}
-        Instructions: Use only provided context. Return a JSON object for teacher, parent, and admin reports.
-        Categories:
-        - High: Safety or major academic failures.
-        - Medium: Recent negative patterns.
-        - Low: General updates or good news.
+        You are an Expert Educational Assistant.
+        Synthesize insights for {student_name} based on the following context:
 
-        Output format:
+        {c_text}
+
+        Instructions: Use only the provided context. Return a JSON object.
+        Priority categories:
+        - high: Safety concerns or major academic failures.
+        - medium: Recent negative patterns that need attention.
+        - low: General updates or positive news.
+
+        Output format (JSON only, no markdown):
         {{
           "teacher_summary": "detailed analysis",
-          "parent_summary": "encouraging update with specific home activity",
-          "admin_summary": "safety/logistics view",
+          "parent_summary": "encouraging update with a specific home activity suggestion",
+          "admin_summary": "safety and logistics view",
           "priority": "low/medium/high"
         }}
         """
