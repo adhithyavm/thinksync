@@ -277,7 +277,7 @@ export default function Dashboard() {
                 {/* Footer / Link to actual doc */}
                 <div className="pt-4 mt-2 border-t border-slate-50 flex justify-end">
                   <a 
-                    href={`http://localhost:8000${item.kid_documents?.file_url}`} 
+                    href={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${item.kid_documents?.file_url}`} 
                     target="_blank" 
                     rel="noreferrer"
                     className="flex items-center gap-2 text-indigo-600 font-bold text-xs uppercase tracking-widest hover:text-indigo-700 transition"
