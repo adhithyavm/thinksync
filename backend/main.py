@@ -6,7 +6,7 @@ import os
 import shutil
 import json
 import logging
-from studymate import create_vs, get_pdf_text, ACTIVE_MODEL, API_KEY
+from studymate import get_pdf_text, ACTIVE_MODEL, API_KEY
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -63,10 +63,8 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         res = supabase.table("kid_documents").insert(payload).execute()
         doc_id = res.data[0]["id"]
 
-        # build vector store and retrieve relevant chunks
-        store = create_vs([f_path])
-        matches = store.similarity_search(student_name, k=4)
-        c_text = "\n".join([m.page_content for m in matches])
+        # use extracted text directly as LLM context (no embedding API needed)
+        c_text = full_text[:6000]
 
         # synthesize insights using the actual document context
         llm_engine = ChatGoogleGenerativeAI(model=ACTIVE_MODEL, temperature=0.2, google_api_key=API_KEY)

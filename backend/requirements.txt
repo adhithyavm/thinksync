@@ -1,11 +1,7 @@
 fastapi
 uvicorn
 python-multipart
-langchain
-langchain-text-splitters
-langchain-community
 langchain-google-genai
 python-dotenv
 supabase
 PyMuPDF
-faiss-cpu
