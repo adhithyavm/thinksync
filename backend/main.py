@@ -63,46 +63,42 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         res = supabase.table("kid_documents").insert(payload).execute()
         doc_id = res.data[0]["id"]
 
-        # get context for LLM
+        # build vector store and retrieve relevant chunks
         store = create_vs([f_path])
         matches = store.similarity_search(student_name, k=4)
         c_text = "\n".join([m.page_content for m in matches])
 
-        # gen synthesis
+        # synthesize insights using the actual document context
         llm_engine = ChatGoogleGenerativeAI(model=ACTIVE_MODEL, temperature=0.2, google_api_key=API_KEY)
-        
-        prompt = f"""
-        You are an Expert Educational Assistant.
-        Synthesize insights for {student_name} based on the following context:
 
-        {c_text}
+        prompt = f"""You are an expert educational assistant.
+Student: {student_name}
+Document context:
+{c_text}
 
-        Instructions: Use only the provided context. Return a JSON object.
-        Priority categories:
-        - high: Safety concerns or major academic failures.
-        - medium: Recent negative patterns that need attention.
-        - low: General updates or positive news.
+Instructions: Use only the context above. Return a valid JSON object with no extra text.
+Classify priority as:
+- high: safety concerns or major academic failures
+- medium: recent negative trends
+- low: general updates or positive news
 
-        Output format (JSON only, no markdown):
-        {{
-          "teacher_summary": "detailed analysis",
-          "parent_summary": "encouraging update with a specific home activity suggestion",
-          "admin_summary": "safety and logistics view",
-          "priority": "low/medium/high"
-        }}
-        """
-        
+Return exactly this JSON format:
+{{
+  "teacher_summary": "detailed academic analysis for the teacher",
+  "parent_summary": "encouraging update with a specific home activity suggestion",
+  "admin_summary": "safety and logistics perspective",
+  "priority": "low"
+}}"""
+
         raw_res = llm_engine.invoke(prompt)
         text_out = raw_res.content.replace("```json", "").replace("```", "").strip()
-        
+
         try:
             parsed = json.loads(text_out)
-        except:
-            # fallback if LLM is weird
-            text_out = text_out.replace("\n", " ")
-            parsed = json.loads(text_out)
+        except Exception:
+            parsed = json.loads(text_out.replace("\n", " "))
 
-        # save insights
+        # save insights to db
         insight_data = {
             "document_id": doc_id,
             "summary_teacher": parsed.get("teacher_summary", ""),
@@ -112,7 +108,7 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         }
         supabase.table("insights").insert(insight_data).execute()
 
-        return parsed 
+        return parsed
 
     except Exception as err:
         logger.error(f"Error in processing: {str(err)}")
