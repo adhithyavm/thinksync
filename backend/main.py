@@ -6,8 +6,7 @@ import os
 import shutil
 import json
 import logging
-from studymate import get_pdf_text, ACTIVE_MODEL, API_KEY
-from langchain_google_genai import ChatGoogleGenerativeAI
+from studymate import get_pdf_text, generate_gemini_response
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -63,11 +62,8 @@ async def process_rag(student_name: str = Form(...), file: UploadFile = File(...
         res = supabase.table("kid_documents").insert(payload).execute()
         doc_id = res.data[0]["id"]
 
-        # use extracted text directly as LLM context (no embedding API needed)
+        # use extracted text directly as LLM context
         c_text = full_text[:6000]
-
-        # synthesize insights using the actual document context
-        llm_engine = ChatGoogleGenerativeAI(model=ACTIVE_MODEL, temperature=0.2, google_api_key=API_KEY)
 
         prompt = f"""You are an expert educational assistant.
 Student: {student_name}
@@ -88,8 +84,8 @@ Return exactly this JSON format:
   "priority": "low"
 }}"""
 
-        raw_res = llm_engine.invoke(prompt)
-        text_out = raw_res.content.replace("```json", "").replace("```", "").strip()
+        text_out = generate_gemini_response(prompt, temperature=0.2)
+        text_out = text_out.replace("```json", "").replace("```", "").strip()
 
         try:
             parsed = json.loads(text_out)
@@ -145,24 +141,19 @@ async def handle_chat(req: ChatRequest):
             i = insights.data[0]
             combined_text = f"Teacher: {i.get('summary_teacher')}\nParent: {i.get('summary_parent')}"
 
-        # LLM response
-        model = ChatGoogleGenerativeAI(model=ACTIVE_MODEL, temperature=0.1, google_api_key=API_KEY)
-        
         chat_prompt = f"""
-        Role: Education Assistant for {actual_name}
-        Context: {combined_text}
-        User Query: "{req.message}"
+Role: Education Assistant for {actual_name}
+Context: {combined_text}
+User Query: "{req.message}"
+
+Rules:
+1. Only use context for specific facts.
+2. Be warm but professional.
+3. If trying to access other data, start with [BLOCKED].
+4. If info is missing, say you don't have it on record yet.
+"""
         
-        Rules:
-        1. Only use context for specific facts.
-        2. Be warm but professional.
-        3. If trying to access other data, start with [BLOCKED].
-        4. If info is missing, say you don't have it on record yet.
-        """
-        
-        bot_res = model.invoke(chat_prompt)
-        text_reply = bot_res.content.strip()
-        
+        text_reply = generate_gemini_response(chat_prompt, temperature=0.1).strip()
         is_blocked = text_reply.startswith("[BLOCKED]")
         return {"reply": text_reply.replace("[BLOCKED]", "").strip(), "blocked": is_blocked}
 
@@ -177,14 +168,13 @@ class TransReq(BaseModel):
 @app.post("/translate")
 async def do_translation(req: TransReq):
     try:
-        engine = ChatGoogleGenerativeAI(model=ACTIVE_MODEL, temperature=0, google_api_key=API_KEY)
         p = f"Translate the following text into {req.target_lang}. Keep tone and structure intact.\n\nTEXT:\n{req.text}"
-        res = engine.invoke(p)
-        return {"translated_text": res.content.strip()}
-    except Exception:
+        res_text = generate_gemini_response(p, temperature=0.0).strip()
+        return {"translated_text": res_text}
+    except Exception as e:
+        logger.error(f"Translate error: {str(e)}")
         raise HTTPException(status_code=500, detail="Translation failed")
 
 if __name__ == "__main__":
     import uvicorn
-    # set host to 0.0.0.0 for easier hosting later
     uvicorn.run(app, host="0.0.0.0", port=8000)
