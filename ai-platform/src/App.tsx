@@ -14,7 +14,7 @@ export default function App() {
             <div className="bg-gradient-to-br from-indigo-600 to-violet-600 p-2.5 rounded-2xl shadow-lg shadow-indigo-200">
               <Sparkles className="text-white" size={24} />
             </div>
-            <span className="font-extrabold text-2xl tracking-tighter text-slate-900">AI<span className="text-indigo-600">Education</span></span>
+            <span className="font-extrabold text-2xl tracking-tighter text-slate-900">Think<span className="text-indigo-600">Sync</span></span>
           </div>
           <div className="flex gap-10">
             <Link to="/" className="text-slate-500 hover:text-indigo-600 font-bold text-sm uppercase tracking-widest transition-all">Capture</Link>
